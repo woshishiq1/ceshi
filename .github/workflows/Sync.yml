@@ -31,7 +31,7 @@ jobs:
 
         run: |
 
-          git remote add upstream <woshishiqioc/ceshi>
+          git remote add upstream "https://github.com/woshishiqioc/ceshi.git"
 
           git fetch upstream
 
