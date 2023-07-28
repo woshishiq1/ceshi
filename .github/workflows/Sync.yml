@@ -1,4 +1,4 @@
- name: Sync Upstream Repository
+name: Sync Upstream Repository
 
 on:
 
