@@ -39,4 +39,4 @@ jobs:
 
           git merge upstream/main
 
-          git push
+          git push origin main
