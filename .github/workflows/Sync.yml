@@ -35,7 +35,7 @@ jobs:
 
           git fetch upstream
 
-          git checkout master
+          git checkout main
 
           git merge upstream/master
 
