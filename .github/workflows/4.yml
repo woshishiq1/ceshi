@@ -17,7 +17,7 @@ jobs:
         run: git fetch upstream
 
       - name: Merge upstream/main into main branch
-        run: git merge upstream/main --no-edit
+        run: git merge upstream/main
 
       - name: Push changes to origin
         uses: ad-m/github-push-action@v0.6.0
