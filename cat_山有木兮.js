@@ -6,8 +6,7 @@ const MOBILE_UA = 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (
 const DefHeader = {'User-Agent': MOBILE_UA};
 
 let HOSTS = [
-  'https://film.symx.club',
-  'https://film.symx.top'
+  'https://film.symx.club'
 ];
 
 let HOST = '';
@@ -32,7 +31,7 @@ async function init(cfg) {
       }
     } catch {}
   }
-  if (!HOST) throw new Error('无可用站点');
+  if (!HOST) throw new 错误('无可用站点');
   KParams.headers.Referer = HOST;
   KParams.headers.Origin = HOST;
 }
@@ -118,3 +117,4 @@ async function request(url, opt = {}) {
 export function __jsEvalReturn() {
   return { init, home, homeVod, category, search, detail, play };
 }
+
