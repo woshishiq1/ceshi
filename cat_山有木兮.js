@@ -1,143 +1,281 @@
-/* 
-title: '山有木兮', author: '小可乐/v6.1.1-ok修复'
+/*
+title: '山有木兮', author: '小可乐/v6.1.2'
+说明：可以不写ext，用默认值，也可以写ext，ext支持的参数和格式参数如下(所有参数可选填)
+"ext": {
+    "host": "xxxx", //站点网址
+    "timeout": 6000,  //请求超时，单位毫秒
+    "catesSet": "剧集&电影&综艺",  //指定分类和顺序
+    "tabsSet": "线路2&线路1"  //指定线路和顺序
+}
 */
 
-const MOBILE_UA = 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+const MOBILE_UA = 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.91 Mobile Safari/537.36';
 const DefHeader = {'User-Agent': MOBILE_UA};
-
-let HOST;
-let KParams = {
-  headers: {
-    'User-Agent': MOBILE_UA,
-    'Accept': 'application/json, text/plain, */*',
-    'X-Requested-With': 'XMLHttpRequest'
-  },
-  timeout: 8000
+var HOST;
+var KParams = {
+    headers: {'User-Agent': MOBILE_UA},
+    timeout: 5000
 };
 
 async function init(cfg) {
-  try {
-    HOST = (cfg.ext?.host?.trim() || 'https://film.symx.club').replace(/\/$/, '');
-    KParams.headers.Referer = HOST;
-    KParams.headers.Origin = HOST;
-
-    let parseTimeout = parseInt(cfg.ext?.timeout, 10);
-    KParams.timeout = parseTimeout > 0 ? parseTimeout : 8000;
-    KParams.catesSet = cfg.ext?.catesSet?.trim() || '';
-    KParams.tabsSet = cfg.ext?.tabsSet?.trim() || '';
-
-    let raw = await request(`${HOST}/api/film/category`);
-    let obj = safeParseJSON(raw);
-    if (!obj) throw new Error('分类接口无 JSON 返回');
-    KParams.resObj = obj;
-
-  } catch (e) {
-    console.error('init失败:', e.message);
-  }
+    try {
+        HOST = (cfg.ext?.host?.trim() || 'https://film.symx.club').replace(/\/$/, '');
+        KParams.headers['Referer'] = HOST;
+        KParams.headers['X-Platform'] = 'web';
+        let parseTimeout = parseInt(cfg.ext?.timeout?.trim(), 10);
+        KParams.timeout = parseTimeout > 0 ? parseTimeout : 5000;
+        KParams.catesSet = cfg.ext?.catesSet?.trim() || '';
+        KParams.tabsSet = cfg.ext?.tabsSet?.trim() || '';
+        KParams.resObj = safeParseJSON(await request(`${HOST}/api/film/category`));
+    } catch (e) {
+        console.error('初始化参数失败：', e.message);
+    }
 }
 
-async function home() {
-  try {
-    let arr = KParams.resObj?.data || KParams.resObj?.list || [];
-    let classes = arr.map(it => ({
-      type_name: it.categoryName || it.name,
-      type_id: String(it.categoryId || it.id)
-    }));
-    if (KParams.catesSet) classes = ctSet(classes, KParams.catesSet);
-    KParams.tidToTname = {};
-    classes.forEach(it => KParams.tidToTname[it.type_id] = it.type_name);
-    return JSON.stringify({class: classes, filters: {}});
-  } catch {
-    return JSON.stringify({class: [], filters: {}});
-  }
+async function home(filter) {
+    try {
+        let resObj = KParams.resObj;
+        if (!resObj) {throw new Error('源码对象为空');}
+        let typeArr = Array.isArray(resObj.data) ? resObj.data : [];
+        let classes = typeArr.map(item => { return {type_name: item.categoryName ?? '分类名', type_id: item.categoryId.toString() ?? '分类值'}; });       
+        if (KParams.catesSet) { classes = ctSet(classes, KParams.catesSet); }
+        KParams.tidToTname = {};
+        classes.forEach(it => {KParams.tidToTname[it.type_id] = it.type_name;});
+        let filters = {};
+        try {
+            const nameObj = {categoryOptions: 'cateId,类型', areaOptions: 'area,地区', languageOptions: 'lang,语言', yearOptions: 'year,年份', sortOptions: 'by,排序' };
+            let resObjList = await Promise.all(
+                classes.map(async (it) => {
+                    try {
+                        return safeParseJSON(await request(`${HOST}/api/film/category/filter?categoryId=${it.type_id}`));
+                    } catch (sErr) {return null;}
+                })
+            );
+            classes.forEach((it, idx) => {
+                let resObj = resObjList[idx];
+                filters[it.type_id] = Object.entries(nameObj).map(([nObjk, nObjv]) => {
+                    let [kkey, kname] = nObjv.split(',');
+                    let kvalue = (resObj?.data?.[nObjk] ?? []).map(item => {
+                        let [n, v] = [item, item];
+                        if (nObjk === 'sortOptions') {
+                            n = item.label ?? 'noN';
+                            v = item.value ?? 'noV';
+                        }
+                        return {n: n, v: v}; 
+                    });
+                    if (nObjk !== 'sortOptions') {kvalue.unshift({n: '全部', v: ''});}
+                    return {key: kkey, name: kname, value: kvalue};
+                }).filter(fl => fl.key && fl.value.length > 1);
+            });
+        } catch (e) {
+            filters = {};
+        }
+        return JSON.stringify({class: classes, filters: filters});
+    } catch (e) {
+        console.error('获取分类失败：', e.message);
+        return JSON.stringify({class: [], filters: {}});
+    }
 }
 
 async function homeVod() {
-  try {
-    let arr = (KParams.resObj?.data || []).flatMap(it => it.filmList || it.list || []);
-    return JSON.stringify({list: getVodList(arr)});
-  } catch {
-    return JSON.stringify({list: []});
-  }
+    try {
+        let resObj = KParams.resObj;
+        if (!resObj) {throw new Error('源码对象为空');}
+        let homeArr = (resObj.data ?? []).map(it => it.filmList ?? []).flat(1);
+        let VODS = getVodList(homeArr);
+        return JSON.stringify({list: VODS});
+    } catch (e) {
+        console.error('推荐页获取失败：', e.message);
+        return JSON.stringify({list: []});
+    }
 }
 
 async function category(tid, pg, filter, extend) {
-  try {
-    pg = pg > 0 ? pg : 1;
-    let url = `${HOST}/api/film/category/list?categoryId=${extend?.cateId || tid}&area=${extend?.area||''}&language=${extend?.lang||''}&year=${extend?.year||''}&sort=${extend?.by||''}&pageNum=${pg}&pageSize=30`;
-    let obj = safeParseJSON(await request(url));
-    let list = obj?.data?.list || obj?.data?.records || obj?.data || [];
-    return JSON.stringify({list: getVodList(list), page: pg, pagecount: 999, limit: 30, total: 999});
-  } catch {
-    return JSON.stringify({list: [], page: 1, pagecount: 0, limit: 30, total: 0});
-  }
+    try {
+        pg = parseInt(pg, 10);
+        pg = pg > 0 ? pg : 1;      
+        let cateUrl = `${HOST}/api/film/category/list?categoryId=${extend?.cateId || tid}&area=${extend?.area ?? ''}&language=${extend?.lang ?? ''}&year=${extend?.year ?? ''}&sort=${extend?.by ?? ''}&pageNum=${pg}&pageSize=30`;        
+        let resObj = safeParseJSON(await request(cateUrl));
+        if (!resObj) {throw new Error('源码对象为空');}
+        let cateArr = resObj.data?.list ?? [];
+        let VODS = getVodList(cateArr);
+        let pageCount = 999;
+        return JSON.stringify({list: VODS, page: pg, pagecount: pageCount, limit: 30, total: 30*pageCount});
+    } catch (e) {
+        console.error('类别页获取失败：', e.message);
+        return JSON.stringify({list: [], page: 1, pagecount: 0, limit: 30, total: 0});
+    }
 }
 
 async function search(wd, quick, pg) {
-  try {
-    pg = pg > 0 ? pg : 1;
-    let obj = safeParseJSON(await request(`${HOST}/api/film/search?keyword=${encodeURIComponent(wd)}&pageNum=${pg}&pageSize=30`));
-    let list = obj?.data?.list || obj?.data || [];
-    return JSON.stringify({list: getVodList(list), page: pg, pagecount: 10, limit: 30, total: 300});
-  } catch {
-    return JSON.stringify({list: [], page: 1, pagecount: 0, limit: 30, total: 0});
-  }
+    try {
+        pg = parseInt(pg, 10);
+        pg = pg > 0 ? pg : 1;
+        let searchUrl = `${HOST}/api/film/search?keyword=${wd}&pageNum=${pg}&pageSize=30`;
+        let resObj = safeParseJSON(await request(searchUrl));
+        if (!resObj) {throw new Error('源码对象为空');}
+        let searchArr = resObj.data?.list ?? [];
+        let VODS = getVodList(searchArr);
+        return JSON.stringify({list: VODS, page: pg, pagecount: 10, limit: 30, total: 300});
+    } catch (e) {
+        console.error('搜索页获取失败：', e.message);
+        return JSON.stringify({list: [], page: 1, pagecount: 0, limit: 30, total: 0});
+    }
 }
 
-function getVodList(arr) {
-  return (arr||[]).map(it => ({
-    vod_name: it.name,
-    vod_pic: it.cover,
-    vod_remarks: it.updateStatus || '',
-    vod_id: `${it.id}`
-  }));
+function getVodList(listArr) {
+    try {
+        if (!Array.isArray(listArr) || !listArr.length) {throw new Error('输入参数不符合非空数组要求');}
+        let kvods = [];
+        let idToName = KParams.tidToTname;
+        for (let it of listArr) {
+            let kname = it.name ?? '名称';
+            let kpic = it.cover ?? '图片';
+            let k = it.categoryId?.toString() || '类型';
+            let kremarks = `${it.updateStatus || '状态'}|${it.doubanScore || '无评分'}|${idToName[k] || k}`;
+            kvods.push({
+                vod_name: kname,
+                vod_pic: kpic,
+                vod_remarks: kremarks,
+                vod_id: `${it.id}@${kname}@${kpic}@${kremarks}`
+            });
+        }
+        return kvods;
+    } catch (e) {
+        console.error(`生成视频列表失败：`, e.message);
+        return [];
+    }
 }
 
 async function detail(ids) {
-  try {
-    let [id] = ids.split('@');
-    let obj = safeParseJSON(await request(`${HOST}/api/film/detail?id=${id}`));
-    let d = obj?.data;
-    if (!d) return JSON.stringify({list: []});
-
-    let tabs=[], urls=[];
-    for (let it of d.playLineList||[]) {
-      tabs.push(it.playerName);
-      urls.push((it.lines||[]).map(e=>`${e.name}$${e.id}@${it.playerName}`).join('#'));
+    try {
+        let [id, kname, kpic, remarks] = ids.split('@');
+        let [kremarks, kscore, ktype] = remarks.split('|');
+        let detailUrl = `${HOST}/api/film/detail?id=${id}`;
+        let resObj = safeParseJSON(await request(detailUrl));
+        let kdetail = resObj?.data ?? null;
+        if (!kdetail) {throw new Error('详情对象kdetail解析失败');}
+        let [ktabs, kurls] = [[], []];
+        let [karea = '地区', klang = '语言'] = (kdetail.other || '地区/语言').split('/', 2);
+        let kvod = kdetail?.playLineList ?? null;
+        if (kvod) {
+            for (let it of kvod) {
+                let tab = it.playerName || 'noTab';
+                ktabs.push(tab);
+                let kurl = (it.lines ?? []).map(item => { return `${item.name ?? 'noEpi'}$${item.id ?? 'noUrl'}@${tab}`; }).join('#');
+                kurls.push(kurl);
+            }
+        }
+        if (KParams.tabsSet) {
+            let ktus = ktabs.map((it, idx) => { return {type_name: it, type_value: kurls[idx]} });
+            ktus = ctSet(ktus, KParams.tabsSet);
+            ktabs = ktus.map(it => it.type_name);
+            kurls = ktus.map(it => it.type_value);
+        }
+        let VOD = {
+            vod_id: kdetail.id || id,
+            vod_name: kdetail.name || kname,
+            vod_pic: kdetail.cover || kpic,
+            type_name: ktype,
+            vod_remarks: remarks,
+            vod_year: kdetail.year || '1000',
+            vod_area: karea,
+            vod_lang: klang,
+            vod_director: kdetail.director || '导演',
+            vod_actor: kdetail.actor || '主演',
+            vod_content: kdetail.blurb || '简介',
+            vod_play_from: ktabs.join('$$$'),
+            vod_play_url: kurls.join('$$$')
+        };
+        return JSON.stringify({list: [VOD]});
+    } catch (e) {
+        console.error('详情页获取失败：', e.message);
+        return JSON.stringify({list: []});
     }
-
-    return JSON.stringify({list:[{
-      vod_id:d.id,
-      vod_name:d.name,
-      vod_pic:d.cover,
-      vod_content:d.blurb,
-      vod_play_from:tabs.join('$$$'),
-      vod_play_url:urls.join('$$$')
-    }]});
-  } catch {
-    return JSON.stringify({list: []});
-  }
 }
 
-async function play(flag, ids) {
-  let [id] = ids.split('@');
-  let obj = safeParseJSON(await request(`${HOST}/api/line/play/parse?lineId=${id}`));
-  let url = obj?.data || '';
-  let parse = !/\.m3u8|\.mp4|\.mkv/.test(url);
-  return JSON.stringify({jx: parse?1:0, parse: parse?1:0, url, header: DefHeader});
+async function play(flag, ids, flags) {
+    try {
+        let kurl = '', jx = 0, kp = 0;
+        let [id, ktab] = ids.split('@');
+        let playUrl = `${HOST}/api/line/play/parse?lineId=${id}`;
+        let resObj = safeParseJSON(await request(playUrl));
+        kurl = resObj?.data ?? '';
+        if (!/^http/.test(kurl)) {
+            jx = 1;
+            kp = 1;
+            kurl = playUrl;
+        }
+        return JSON.stringify({jx: jx, parse: kp, url: kurl, header: DefHeader});
+    } catch (e) {
+        console.error('播放失败：', e.message);
+        return JSON.stringify({jx: 0, parse: 0, url: '', header: {}});
+    }
 }
 
 function ctSet(kArr, setStr) {
-  const names = setStr.split('&');
-  return names.map(n=>kArr.find(i=>i.type_name===n)).filter(Boolean);
+    try {
+        if (!Array.isArray(kArr) || kArr.length === 0 || typeof setStr !== 'string' || !setStr) { throw new Error('第一参数需为非空数组，第二参数需为非空字符串'); }
+        const set_arr = [...kArr];
+        const arrNames = setStr.split('&');
+        const filtered_arr = arrNames.map(item => set_arr.find(it => it.type_name === item)).filter(Boolean);
+        return filtered_arr.length? filtered_arr : [set_arr[0]];
+    } catch (e) {
+        console.error('ctSet 执行异常：', e.message);
+        return kArr;
+    }
 }
 
-function safeParseJSON(s) { try {return JSON.parse(s);} catch {return null;} }
+function safeParseJSON(jStr) {
+    try {
+        return JSON.parse(jStr);
+    } catch (e) {
+        return null;
+    }
+}
 
-async function request(url,opt={}) {
-  return (await req(url,{...KParams,...opt})).content||'';
+async function request(reqUrl, options = {}) {
+    try {
+        if (typeof reqUrl !== 'string' || !reqUrl.trim()) { throw new Error('reqUrl需为字符串且非空'); }
+        if (typeof options !== 'object' || Array.isArray(options) || !options) { throw new Error('options类型需为非null对象'); }
+        options.method = options.method?.toLowerCase() || 'get';
+        if (['get', 'head'].includes(options.method)) {
+            delete options.data;
+            delete options.postType;
+        } else {
+            options.data = options.data ?? '';
+            options.postType = options.postType?.toLowerCase() || 'form';
+        }        
+        let {headers, timeout, charset, toBase64 = false, ...restOpts } = options;
+        const optObj = {
+            headers: (typeof headers === 'object' && !Array.isArray(headers) && headers) ? headers : KParams.headers,
+            timeout: parseInt(timeout, 10) > 0 ? parseInt(timeout, 10) : KParams.timeout,
+            charset: charset?.toLowerCase() || 'utf-8',
+            buffer: toBase64 ? 2 : 0,
+            ...restOpts
+        };
+        const res = await req(reqUrl, optObj);
+        if (options.withHeaders) {
+            const resHeaders = typeof res.headers === 'object' && !Array.isArray(res.headers) && res.headers ? res.headers : {};
+            const resWithHeaders = { ...resHeaders, body: res?.content ?? '' };
+            return JSON.stringify(resWithHeaders);
+        }
+        return res?.content ?? '';
+    } catch (e) {
+        console.error(`${reqUrl}→请求失败：`, e.message);
+        return options?.withHeaders ? JSON.stringify({ body: '' }) : '';
+    }
 }
 
 export function __jsEvalReturn() {
-  return {init,home,homeVod,category,search,detail,play,proxy:null};
+    return {
+        init,
+        home,
+        homeVod,
+        category,
+        search,
+        detail,
+        play,
+        proxy: null
+    };
 }
